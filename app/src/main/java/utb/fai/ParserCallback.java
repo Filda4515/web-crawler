@@ -1,28 +1,22 @@
 package utb.fai;
 
 import java.net.URI;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentSkipListSet;
 
-import javax.swing.text.MutableAttributeSet;
-import javax.swing.text.html.HTML;
-import javax.swing.text.html.HTMLEditorKit;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 
-/**
- * Třída ParserCallback je používána parserem DocumentParser,
- * je implementován přímo v JDK a umí parsovat HTML do verze 3.0.
- * Při parsování (analýze) HTML stránky volá tento parser
- * jednotlivé metody třídy ParserCallback, co nám umožuje
- * provádět s částmi HTML stránky naše vlastní akce.
- * 
- * @author Tomá Dulík
- */
-class ParserCallback extends HTMLEditorKit.ParserCallback {
+
+class ParserCallback {
 
     /**
      * pageURI bude obsahovat URI aktuální parsované stránky. Budeme
-     * jej vyuívat pro resolving všech URL, které v kódu stránky najdeme
-     * - předtím, než nalezené URL uložíme do foundURLs, musíme z něj udělat
+     * jej využívat pro resolving všech URL, které v kódu stránky najdeme
+     * - předtím, než nalezené URL uložíme do foundURLs, musíme z něj udělat
      * absolutní URL!
      */
     URI pageURI;
@@ -33,65 +27,67 @@ class ParserCallback extends HTMLEditorKit.ParserCallback {
     int depth = 0, maxDepth = 5;
 
     /**
-     * visitedURLs je množina všech URL, které jsme již navtívili
-     * (parsovali). Pokud najdeme na stránce URL, který je v této množině,
-     * nebudeme jej u dále parsovat
+     * visitedURLs je množina všech URL, které jsme již navštívili
+     * (parsovali). Pokud najdeme na stránce URL, který je v této množině,
+     * nebudeme jej už dále parsovat
      */
-    HashSet<URI> visitedURIs;
+    ConcurrentSkipListSet<URI> visitedURIs;
 
     /**
-     * foundURLs jsou všechna nová (zatím nenavštívená) URL, která na stránce
+     * foundURLs jsou všechna nová (zatím nenavšívená) URL, která na stránce
      * najdeme. Poté, co projdeme celou stránku, budeme z tohoto seznamu
      * jednotlivá URL brát a zpracovávat.
      */
-    LinkedList<URIinfo> foundURIs;
+    ConcurrentLinkedQueue<URIinfo> foundURIs;
 
-    /** pokud debugLevel>1, budeme vypisovat debugovací hlášky na std. error */
+    /** pokud debugLevel>1, budeme vypisovat debugovací hlášky na std. error */
     int debugLevel = 0;
 
-    ParserCallback(HashSet<URI> visitedURIs, LinkedList<URIinfo> foundURIs) {
+    HashMap<String, Integer> wordFrequency = new HashMap<>();
+
+    ParserCallback(ConcurrentSkipListSet<URI> visitedURIs, ConcurrentLinkedQueue<URIinfo> foundURIs, int maxDepth, int debugLevel, HashMap<String, Integer> wordFrequency) {
         this.foundURIs = foundURIs;
         this.visitedURIs = visitedURIs;
+        this.maxDepth = maxDepth;
+        this.debugLevel = debugLevel;
+        this.wordFrequency = wordFrequency;
     }
 
-    /**
-     * metoda handleSimpleTag se volá např. u značky <FRAME>
-     */
-    public void handleSimpleTag(HTML.Tag t, MutableAttributeSet a, int pos) {
-        handleStartTag(t, a, pos);
-    }
-
-    public void handleStartTag(HTML.Tag t, MutableAttributeSet a, int pos) {
-        URI uri;
-        String href = null;
-        if (debugLevel > 1)
-            System.err.println("handleStartTag: " + t.toString() + ", pos=" + pos + ", attribs=" + a.toString());
-        if (depth <= maxDepth)
-            if (t == HTML.Tag.A)
-                href = (String) a.getAttribute(HTML.Attribute.HREF);
-            else if (t == HTML.Tag.FRAME)
-                href = (String) a.getAttribute(HTML.Attribute.SRC);
-        if (href != null)
-            try {
-                uri = pageURI.resolve(href);
-                if (!uri.isOpaque() && !visitedURIs.contains(uri)) {
-                    visitedURIs.add(uri);
-                    foundURIs.add(new URIinfo(uri, depth + 1));
-                    if (debugLevel > 0)
-                        System.err.println("Adding URI: " + uri.toString());
+    public void parse(Document doc) {
+        try {
+            if (depth < maxDepth) {
+                Elements links = doc.select("a[href], frame[src]");
+                for (Element link : links) {
+                    String href = link.is("a") ? link.attr("abs:href") : link.attr("abs:src");
+                    if (href != null) {
+                        try {
+                            URI uri = pageURI.resolve(href.replace(" ", "%20"));
+                            if (!uri.isOpaque() && !visitedURIs.contains(uri)) {
+                                visitedURIs.add(uri);
+                                foundURIs.add(new URIinfo(uri, depth + 1));
+                                if (debugLevel > 0)
+                                    System.err.println("Adding URI: " + uri.toString());
+                            }
+                        } catch (Exception e) {
+                            System.err.println("Invalid URI: " + href);
+                            e.printStackTrace();
+                        }
+                    }
                 }
-            } catch (Exception e) {
-                System.err.println("Nalezeno nekorektní URI: " + href);
-                e.printStackTrace();
             }
-
+    
+            String visibleText = doc.body().text();
+            handleText(visibleText);
+        } catch (Exception e) {
+            System.err.println("Error while parsing document: " + e.getMessage());
+        }
     }
 
     /******************************************************************
-     * V metodě handleText bude probíhat veškerá činnost, související se
-     * zjiováním četnosti slov v textovém obsahu HTML stránek.
-     * IMPLEMENTACE TÉTO METODY JE V TÉTO ÚLOZE VAŠÍM ÚKOLEM !!!!
-     * Možný postup:
+     * V metodě handleText bude probíhat veškerá činnost, související se
+     * zjišťováním četnosti slov v textovém obsahu HTML stránek.
+     * IMPLEMENTACE TÉTO METODY JE V TÉTO ÚLOZE VAŠÍM ÚKOLEM !!!!
+     * Možný postup:
      * Ve třídě Parser (klidně v její metodě main) si vytvořte vyhledávací tabulku
      * =instanci třídy HashMap<String,Integer> nebo TreeMap<String,Integer>.
      * Do této tabulky si ukládejte dvojice klíč-data, kde
@@ -99,10 +95,20 @@ class ParserCallback extends HTMLEditorKit.ParserCallback {
      * data typu Integer bude dosavadní počet výskytu daného slova v
      * HTML stránkách.
      *******************************************************************/
-    public void handleText(char[] data, int pos) {
-        System.out.println("handleText: " + String.valueOf(data) + ", pos=" + pos);
-        /**
-         * ...tady bude vaše implementace...
-         */
+    public void handleText(String text) {
+        // String text = data.toLowerCase();
+        if (debugLevel == 1)
+            System.err.println("handleText: " + (text.length() > 20 ? text.substring(0, 20) : text) + "...");
+        if (debugLevel > 1)
+            System.err.println("handleText: " + text);
+        String[] words = text.split("\\s+");
+
+        for (String word : words) {
+            if (!word.isBlank()) {
+                wordFrequency.put(word, wordFrequency.getOrDefault(word, 0) + 1);
+                if (debugLevel > 1)
+                    System.err.println("Vložení slova: " + word);
+            }
+        }
     }
 }
